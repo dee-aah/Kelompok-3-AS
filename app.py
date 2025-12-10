@@ -3,8 +3,8 @@ import streamlit as st
 import seaborn
 import matplotlib
 
-model = joblib.load(r"models\model_logistic_regression.pkl")
-tfidf = joblib.load(r"models\tfidf_vectorizer.pkl")
+model = joblib.load("models/model_logistic_regression.pkl")
+tfidf = joblib.load("models/tfidf_vectorizer.pkl")
 
 st.title("Aplikasi Klasifikasi Komentar Publik")
 st.write("Aplikasi Ini Dibuat dengan Teknologi NLP dengan Memanfaatkan Model Machine Learning Logistic Regression")
@@ -22,4 +22,4 @@ if st.button("Submit"):
             1 : "Positif"
         }
         st.subheader("Hasil Analisis Komentar")
-        st.write("**Komentar : **", label_map.get (prediksi, prediksi))
+        st.write(" ** Komentar : ** ", label_map.get (prediksi, prediksi))
