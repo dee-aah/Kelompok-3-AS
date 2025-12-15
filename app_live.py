@@ -1,245 +1,144 @@
 import streamlit as st
 import joblib
-import time
 import pandas as pd
 from datetime import datetime
-# Anda perlu menginstal pustaka ini: pip install google-api-python-client
-from googleapiclient.discovery import build 
+from googleapiclient.discovery import build
+from streamlit_autorefresh import st_autorefresh
 
-# --- 1. Konfigurasi dan Pemuatan Model ---
 
-# PENTING: Pastikan jalur file sudah benar
 MODEL_PATH = "models/model_svm (2).pkl"
 TFIDF_PATH = "models/tfidf.pkl"
+REFRESH_INTERVAL = 5000  # ms
 
 @st.cache_resource
 def load_resources():
-    try:
-        model = joblib.load(MODEL_PATH)
-        tfidf = joblib.load(TFIDF_PATH)
-        return model, tfidf
-    except FileNotFoundError:
-        st.error(f"Gagal memuat model atau vectorizer dari {MODEL_PATH} atau {TFIDF_PATH}. Pastikan file ada.")
-        st.stop()
-    except Exception as e:
-        st.error(f"Terjadi kesalahan saat memuat sumber daya: {e}")
-        st.stop()
+    model = joblib.load(MODEL_PATH)
+    tfidf = joblib.load(TFIDF_PATH)
+    return model, tfidf
 
 model, tfidf = load_resources()
 label_map = {0: "Ham", 1: "Spam"}
 
-# Data dummy untuk simulasi live chat
-SIMULATED_COMMENTS = [
-    "Videonya sangat informatif, terima kasih banyak!",  # Ham
-    "KLIK DI SINI DAPATKAN VOUCHER GRATIS LANGSUNG!!",  # Spam
-    "Terbaik lah pokoknya, subscribe!", # Ham
-    "Beli followers instan, kunjungi link kami di bio.", # Spam
-    "Ada yang tahu ini bahas apa ya?", # Ham
-    "KEREN! Keren banget! 👍", # Ham
-    "Dapatkan penghasilan jutaan tanpa modal, WA: 0812345678", # Spam
-    "Setuju dengan komentator di atas.", # Ham
-    " bisa main gaj tolol.",
-]
-
-# --- 2. Fungsi API YouTube (Perlu Kunci Asli) ---
-
-# Global variable untuk menyimpan nextPageToken agar tidak mengambil chat yang sama berulang kali
-# (Ini harus diinisialisasi dalam st.session_state jika di production)
-if 'next_page_token' not in st.session_state:
+if "is_running" not in st.session_state:
+    st.session_state.is_running = False
+if "next_page_token" not in st.session_state:
     st.session_state.next_page_token = None
-
-def fetch_youtube_comments(api_key, live_chat_id):
-    """
-    Fungsi untuk mengambil komentar live chat dari YouTube API.
-    """
-    # Mengambil token dari session state
-    current_token = st.session_state.next_page_token 
-    
-    try:
-        youtube = build('youtube', 'v3', developerKey=api_key)
-        
-        # Panggil API liveChatMessages.list
-        request = youtube.liveChatMessages().list(
-            liveChatId=live_chat_id,
-            part='snippet,authorDetails',
-            # Gunakan token dari session state
-            pageToken=current_token 
-        )
-        response = request.execute()
-        
-        # Simpan token baru ke session state
-        st.session_state.next_page_token = response.get('nextPageToken')
-
-        # ... (Sisa fungsi untuk ekstraksi komentar)
-        comments = []
-        for item in response.get('items', []):
-            text = item['snippet']['displayMessage']
-            comments.append(text)
-            
-        return comments
-
-    except Exception as e:
-        # Menambahkan pengecualian untuk error invalid token agar bisa di-debug
-        if "page token is not valid" in str(e):
-            st.error("TOKEN INVALID: Mencoba memulai ulang stream. Harap tekan Mulai kembali.")
-            stop_stream()
-        st.warning(f"Gagal mengambil data dari YouTube API: {e}. Pastikan API Key dan Live Chat ID benar.")
-        return []
-
-# --- 3. Fungsi Klasifikasi ---
+if "all_comments" not in st.session_state:
+    st.session_state.all_comments = pd.DataFrame(
+        columns=["Waktu", "Komentar", "Prediksi"]
+    )
 
 def classify_comment(text):
-    """Mengubah teks menjadi vektor dan memprediksi menggunakan model."""
-    if not text.strip():
-        return "N/A"
-    
     vector = tfidf.transform([text])
-    prediction = model.predict(vector)[0]
-    
-    return label_map.get(prediction, "Unknown")
+    pred = model.predict(vector)[0]
+    return label_map[pred]
 
-# --- 4. Fungsi Styling Pandas (Perbaikan Warna/Tebal) ---
 
-def highlight_prediction(val):
-    """Fungsi untuk mewarnai sel berdasarkan nilai 'Prediksi'."""
-    if val == 'Spam':
-        # Warna latar belakang merah, teks tebal
-        return 'background-color: #ffcccc; font-weight: bold; color: black'
-    elif val == 'Ham':
-        # Warna latar belakang hijau, teks tebal
-        return 'background-color: #ccffcc; font-weight: bold; color: black'
-    return ''
+def get_live_chat_id(api_key, video_id):
+    youtube = build("youtube", "v3", developerKey=api_key)
+    request = youtube.videos().list(
+        part="liveStreamingDetails",
+        id=video_id
+    )
+    response = request.execute()
+    items = response.get("items", [])
+    if not items:
+        return None
+    return items[0]["liveStreamingDetails"].get("activeLiveChatId")
 
-# --- 5. Logika Tombol dan Session State ---
 
-# Inisialisasi state jika belum ada
-if 'is_running' not in st.session_state:
-    st.session_state.is_running = False
-if 'comment_log' not in st.session_state:
-    st.session_state.comment_log = pd.DataFrame(columns=['Waktu', 'Komentar', 'Prediksi', 'Warna'])
-if 'spam_count' not in st.session_state:
-    st.session_state.spam_count = 0
-if 'ham_count' not in st.session_state:
-    st.session_state.ham_count = 0
-if 'total_comments' not in st.session_state:
-    st.session_state.total_comments = 0
-if 'comment_index' not in st.session_state:
-    st.session_state.comment_index = 0
+def fetch_live_chat(api_key, live_chat_id):
+    youtube = build("youtube", "v3", developerKey=api_key)
+    request = youtube.liveChatMessages().list(
+        liveChatId=live_chat_id,
+        part="snippet",
+        pageToken=st.session_state.next_page_token
+    )
+    response = request.execute()
+    st.session_state.next_page_token = response.get("nextPageToken")
+    return [item["snippet"]["displayMessage"] for item in response.get("items", [])]
 
-def start_stream():
+
+def save_comment(text, label):
+    new_row = pd.DataFrame({
+        "Waktu": [datetime.now()],
+        "Komentar": [text],
+        "Prediksi": [label]
+    })
+    st.session_state.all_comments = pd.concat(
+        [st.session_state.all_comments, new_row],
+        ignore_index=True
+    )
+
+
+def highlight(val):
+    if val == "Spam":
+        return "background-color:#ffcccc;font-weight:bold"
+    return "background-color:#ccffcc;font-weight:bold"
+
+st.set_page_config(page_title="YouTube Spam Detector", layout="wide")
+st.title("YouTube Live & Post Live Spam Detector")
+st.write("Deteksi **Spam / Ham** dari live chat YouTube dan tetap bisa dianalisis setelah live selesai.")
+
+
+st.sidebar.header("Konfigurasi")
+api_key = st.sidebar.text_input("YouTube API Key", type="password")
+video_id = st.sidebar.text_input("YouTube Video ID")
+
+col1, col2 = st.sidebar.columns(2)
+if col1.button("▶ Mulai"):
     st.session_state.is_running = True
-    
-def stop_stream():
+if col2.button("⏹ Stop"):
     st.session_state.is_running = False
 
-# --- 6. Tampilan Streamlit Utama ---
+if st.session_state.is_running:
+    if api_key and video_id:
+        try:
+            live_chat_id = get_live_chat_id(api_key, video_id)
+            if not live_chat_id:
+                st.error("Live chat tidak tersedia (live belum mulai / chat dimatikan)")
+            else:
+                comments = fetch_live_chat(api_key, live_chat_id)
+                for text in comments:
+                    label = classify_comment(text)
+                    save_comment(text, label)
+        except Exception as e:
+            st.error(f"Gagal mengambil live chat: {e}")
+    else:
+        st.warning("Masukkan API Key dan Video ID")
 
-st.title("🔴 Live Dashboard: Klasifikasi Komentar YouTube")
-st.write("Analisis Komentar Real-time menggunakan Model SVM.")
+    st_autorefresh(interval=REFRESH_INTERVAL, key="live_refresh")
 
-# Input API dan Live Chat ID
-st.sidebar.header("Konfigurasi YouTube API")
-api_key = st.sidebar.text_input("YouTube API Key:", type="password")
-live_chat_id = st.sidebar.text_input("Live Chat ID:")
+colA, colB, colC = st.columns(3)
+total = len(st.session_state.all_comments)
+spam = (st.session_state.all_comments["Prediksi"] == "Spam").sum()
+ham = (st.session_state.all_comments["Prediksi"] == "Ham").sum()
 
-# Opsi Data (Simulasi vs Nyata)
-data_source = st.sidebar.radio(
-    "Sumber Data:",
-    ("Simulasi (Offline)", "YouTube API (Online)"),
-    index=0
+colA.metric("Total Komentar", total)
+colB.metric("Spam", spam)
+colC.metric("Ham", ham)
+
+st.subheader("Log Komentar")
+st.dataframe(
+    st.session_state.all_comments.tail(30).style.applymap(
+        highlight, subset=["Prediksi"]
+    ),
+    use_container_width=True
 )
 
-# Tombol Start/Stop
-col_start, col_stop, col_status = st.columns([1, 1, 3])
 
-col_start.button("▶️ Mulai Stream", on_click=start_stream, type="primary", disabled=st.session_state.is_running)
-col_stop.button("⏹️ Hentikan Stream", on_click=stop_stream, disabled=not st.session_state.is_running)
+st.subheader("Analisis Setelah Live")
+if not st.session_state.all_comments.empty:
+    df = st.session_state.all_comments.copy()
+    df["Menit"] = pd.to_datetime(df["Waktu"]).dt.floor("min")
+    spam_per_minute = df[df["Prediksi"] == "Spam"].groupby("Menit").size()
 
-if st.session_state.is_running:
-    col_status.success(f"Stream Aktif ({data_source})")
-else:
-    col_status.warning("Stream Tidak Aktif. Tekan Mulai.")
-    
-st.header("Metrik Live")
-metrics_placeholder = st.empty()
-st.header("Log Komentar Terbaru")
-live_log_placeholder = st.empty()
+    st.line_chart(spam_per_minute)
 
-
-# --- 7. Loop Esekusi Live ---
-
-if st.session_state.is_running:
-    
-    # Pilih sumber data
-    if data_source == "YouTube API (Online)":
-        if not api_key or not live_chat_id:
-            st.error("Masukkan API Key dan Live Chat ID untuk memulai stream YouTube.")
-            stop_stream()
-            st.rerun() # Rerun untuk update status
-            
-        # Ambil data dari YouTube (Menggunakan waktu refresh yang ditetapkan YouTube)
-        new_comments = fetch_youtube_comments(api_key, live_chat_id)
-        # YouTube merekomendasikan refresh sekitar 5-10 detik
-        sleep_time = 5 
-        
-    else: # Data Simulasi
-        # Ambil komentar dari array simulasi
-        new_comments = [SIMULATED_COMMENTS[st.session_state.comment_index]]
-        st.session_state.comment_index = (st.session_state.comment_index + 1) % len(SIMULATED_COMMENTS)
-        sleep_time = 2 # Lebih cepat untuk simulasi
-
-    
-    if new_comments:
-        # Proses semua komentar baru
-        for new_comment_text in new_comments:
-            
-            prediction = classify_comment(new_comment_text)
-            
-            if prediction == "Spam":
-                st.session_state.spam_count += 1
-            elif prediction == "Ham":
-                st.session_state.ham_count += 1
-                
-            st.session_state.total_comments += 1
-            
-            # Buat baris data baru
-            new_data = pd.DataFrame({
-                'Waktu': [datetime.now().strftime("%H:%M:%S")],
-                'Komentar': [new_comment_text],
-                'Prediksi': [prediction],
-            })
-            
-            # Tambahkan data baru ke log dan batasi 10 entri terbaru
-            st.session_state.comment_log = pd.concat(
-                [new_data, st.session_state.comment_log]
-            ).head(10).reset_index(drop=True)
-
-    # --- Perbarui Tampilan Metrik ---
-    with metrics_placeholder.container():
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Komentar", st.session_state.total_comments)
-        
-        # Hindari pembagian dengan nol
-        spam_percent = round((st.session_state.spam_count / st.session_state.total_comments) * 100) if st.session_state.total_comments > 0 else 0
-        ham_percent = round((st.session_state.ham_count / st.session_state.total_comments) * 100) if st.session_state.total_comments > 0 else 0
-        
-        col2.metric("Spam Terdeteksi", st.session_state.spam_count, delta=f"{spam_percent}%", delta_color="inverse")
-        col3.metric("Ham", st.session_state.ham_count, delta=f"{ham_percent}%", delta_color="normal")
-        
-    # --- Perbarui Tampilan Tabel Log (dengan Styling) ---
-    
-    # Gunakan .style untuk mewarnai dan menebalkan teks
-    display_df = st.session_state.comment_log.copy()
-    
-    live_log_placeholder.dataframe(
-        display_df.style.applymap(
-            highlight_prediction, 
-            subset=['Prediksi']
-        ),
-        hide_index=True,
-        use_container_width=True
+    st.download_button(
+        " Download CSV",
+        df.to_csv(index=False),
+        "hasil_livechat.csv"
     )
-    
-    # Jeda loop dan minta Streamlit untuk menjalankan ulang
-    time.sleep(sleep_time)
-    st.rerun()
+else:
+    st.info("Belum ada data komentar")
