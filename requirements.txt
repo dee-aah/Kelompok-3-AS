@@ -4,5 +4,5 @@ numpy
 pandas
 matplotlib
 seaborn
-google-api-python-clientstreamlit-autorefresh
-Sastrawi
+google-api-python-client
+streamlit-autorefresh
