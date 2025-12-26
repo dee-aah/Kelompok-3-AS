@@ -109,7 +109,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("YouTube Live :yellow[Spam] & :red[Toxic] Detector")
+st.markdown(
+    "<h1 style='text-align:center;'>YouTube Live <a style='color:#FFD41D;'>Spam</a> & <a style='color:#ff4d4d;'>Toxic</a> Detector</h1>",
+    unsafe_allow_html=True
+    )
+
 
 # ======================================================
 # TABS
@@ -122,16 +126,17 @@ tab1, tab2 = st.tabs(["🔴 Live Monitor", "📝 Deteksi Manual"])
 with tab1:
     with st.expander("⚙️ Pengaturan Live"):
         api_key = st.secrets.get("YOUTUBE_API_KEY", "")
+        # api_key = st.text_input("YouTube API Key", type="password")
         video_id = st.text_input("Masukkan YouTube Video ID")
 
         c1, c2 = st.columns(2)
-        if c1.button("▶ Mulai"):
+        if c1.button(":green[▶] Mulai"):
             st.session_state.is_running = True
             st.session_state.start_time = datetime.now()
             st.session_state.all_comments = pd.DataFrame(columns=["Waktu", "Komentar", "Prediksi"])
             st.rerun()
 
-        if c2.button("⏹ Berhenti", type="primary"):
+        if c2.button(":red[⏹] Berhenti"):
             st.session_state.is_running = False
             st.rerun()
 
