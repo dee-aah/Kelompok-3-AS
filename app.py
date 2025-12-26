@@ -135,7 +135,6 @@ with tab1:
             st.session_state.start_time = datetime.now()
             st.session_state.all_comments = pd.DataFrame(columns=["Waktu", "Komentar", "Prediksi"])
             st.rerun()
-
         if c2.button(":red[⏹] Berhenti"):
             st.session_state.is_running = False
             st.rerun()
